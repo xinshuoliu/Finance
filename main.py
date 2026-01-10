@@ -8,6 +8,19 @@ st.set_page_config(page_title="simple finance app", page_icon="💰", layout="wi
 
 category_file = "categories.json"
 
+budget_file = "budgets.json"
+
+if "budgets" not in st.session_state:
+    st.session_state.budgets = {}
+
+if os.path.exists(budget_file):
+    try:
+        with open(budget_file, "r") as f:
+            st.session_state.budgets = json.load(f)
+    except Exception:
+        st.session_state.budgets = {}
+
+
 if "categories" not in st.session_state:
     st.session_state.categories = {
         "Uncategorized": []
@@ -20,6 +33,10 @@ if os.path.exists(category_file):
 def save_categories():
     with open(category_file, "w") as f:
         json.dump(st.session_state.categories, f)
+
+def save_budgets():
+    with open(budget_file, "w") as f:
+        json.dump(st.session_state.budgets, f)
 
 def categorize_transactions(df):
     df["Category"] = "Uncategorized"
@@ -80,9 +97,7 @@ def add_keyword_to_category(category, keyword):
 
     st.session_state.categories[category].append(keyword)
     save_categories()
-    return True
-
-
+    return True 
 
 def main():
     st.title("Finance Dashboard")
@@ -93,8 +108,51 @@ def main():
         df = load_transactions(uploaded_file)
 
         if df is not None: 
-            debits_df = df[df["Debit/Credit"] == "Debit"].copy()
-            credits_df = df[df["Debit/Credit"] == "Credit"].copy()
+            st.subheader("Filters")
+
+            col1, col2, col3 = st.columns([2, 1, 2])
+
+            with col1:
+                min_date = df["Date"].min().date()
+                max_date = df["Date"].max().date()
+                start_date, end_date = st.date_input(
+                    "Date range",
+                    value=(min_date, max_date),
+                    min_value=min_date,
+                    max_value=max_date
+                )
+
+            with col2:
+                show_debits = st.checkbox("Show Debits", value=True)
+                show_credits = st.checkbox("Show Credits", value=True)
+
+            with col3:
+                search_text = st.text_input("Search in Details").lower().strip()
+
+            filtered_df = df.copy()
+
+            # date filter
+            filtered_df = filtered_df[
+                (filtered_df["Date"].dt.date >= start_date) &
+                (filtered_df["Date"].dt.date <= end_date)
+            ]
+
+            # debit / credit filter
+            allowed_types = []
+            if show_debits:
+                allowed_types.append("Debit")
+            if show_credits:
+                allowed_types.append("Credit")
+
+            filtered_df = filtered_df[filtered_df["Debit/Credit"].isin(allowed_types)]
+
+            # search filter
+            if search_text:
+                filtered_df = filtered_df[
+                    filtered_df["Details"].astype(str).str.lower().str.contains(search_text, na=False)
+                ]
+            debits_df = filtered_df[filtered_df["Debit/Credit"] == "Debit"].copy()
+            credits_df = filtered_df[filtered_df["Debit/Credit"] == "Credit"].copy()
 
             st.session_state.debits_df = debits_df.copy()
 
@@ -146,6 +204,53 @@ def main():
                 use_container_width=True,
                 hide_index=True
             )  
+            
+            st.subheader("Budgets (per category)")
+
+            cats = list(st.session_state.categories.keys())
+            selected_cat = st.selectbox("Choose a category", options=cats)
+
+            current_budget = float(st.session_state.budgets.get(selected_cat, 0) or 0.0)
+            new_budget = st.number_input(
+                "Budget (CAD) for the current filtered period",
+                min_value=0.0,
+                value=current_budget,
+                step=10.0
+            )
+
+            colA, colB = st.columns([1, 2])
+            with colA:
+                if st.button("Save Budget"):
+                    st.session_state.budgets[selected_cat] = float(new_budget)
+                    save_budgets()
+                    st.success(f"Budget saved for {selected_cat}.")
+            with colB:
+                if st.button("Clear Budget"):
+                    if selected_cat in st.session_state.budgets:
+                        del st.session_state.budgets[selected_cat]
+                        save_budgets()
+                    st.info(f"Budget cleared for {selected_cat}.")
+
+            st.subheader("Budget Status")
+
+            for _, row in category_totals.iterrows():
+                cat = row["Category"]
+                spent = float(row["Amount"])
+                budget = float(st.session_state.budgets.get(cat, 0) or 0.0)
+
+                if budget > 0:
+                    ratio = spent / budget if budget else 0.0
+
+                    if spent > budget:
+                        st.warning(f"⚠️ {cat}: {spent:.2f} CAD spent (budget {budget:.2f} CAD)")
+                        st.write(f"Over by: {(spent - budget):.2f} CAD")
+                    else:
+                        remaining = budget - spent
+                        st.success(f"✅ {cat}: {spent:.2f} CAD spent — {remaining:.2f} CAD remaining")
+                        st.write(f"Used: {ratio*100:.0f}%")
+
+                    st.progress(min(ratio, 1.0))
+
             
             fig= px.pie(
                 category_totals,
