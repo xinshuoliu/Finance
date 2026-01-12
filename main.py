@@ -52,6 +52,23 @@ def categorize_transactions(df):
 
     return df
 
+recurring_file = "recurring.json"
+
+if "recurring" not in st.session_state:
+    st.session_state.recurring = []
+
+if os.path.exists(recurring_file):
+    try:
+        with open(recurring_file, "r") as f:
+            st.session_state.recurring = json.load(f)
+    except Exception:
+        st.session_state.recurring = []
+
+def save_recurring():
+    with open(recurring_file, "w") as f:
+        json.dump(st.session_state.recurring, f)
+
+
 def load_transactions(file):
     try:
         df = pd.read_csv(file, skiprows=2)
@@ -156,7 +173,7 @@ def main():
 
             st.session_state.debits_df = debits_df.copy()
 
-            tab1, tab2 = st.tabs(["Expenses (Debits)", "Payments (Credits)"])
+            tab1, tab2, tab3 = st.tabs(["Expenses (Debits)", "Payments (Credits)", "Recurring"])
             with tab1: 
                 new_category = st.text_input("New Category Name")
                 add_button = st.button("Add Category")
@@ -265,5 +282,125 @@ def main():
                 total_payments = credits_df["Amount"].sum()
                 st.metric("Total Payments", f"{total_payments:.2f} CAD")
                 st.write(credits_df)
+
+            with tab3:
+                st.subheader("Recurring payments / subscriptions")
+
+                use_filtered = st.checkbox("Use current filters (date/search) for recurring view", value=False)
+                base_df = filtered_df.copy() if use_filtered else df.copy()
+
+                base_df = base_df[base_df["Debit/Credit"] == "Debit"].copy()
+
+                st.caption("Add keywords like: bell, videotron, gym, spotify, netflix, amazon, internet, etc.")
+
+                colA, colB = st.columns([2, 1])
+
+                with colA:
+                    new_kw = st.text_input("Add recurring keyword (matches if it appears in Details)")
+                with colB:
+                    if st.button("Add keyword"):
+                        k = new_kw.strip()
+                        if k and k.lower() not in [x.lower() for x in st.session_state.recurring]:
+                            st.session_state.recurring.append(k)
+                            save_recurring()
+                            st.success(f"Added: {k}")
+
+                if st.session_state.recurring:
+                    colC, colD = st.columns([2, 1])
+                    with colC:
+                        to_remove = st.selectbox("Remove keyword", options=st.session_state.recurring)
+                    with colD:
+                        if st.button("Remove selected"):
+                            st.session_state.recurring = [x for x in st.session_state.recurring if x != to_remove]
+                            save_recurring()
+                            st.info(f"Removed: {to_remove}")
+
+                st.divider()
+
+                st.subheader("Matched recurring transactions")
+
+                if not st.session_state.recurring:
+                    st.info("Add at least one keyword to see matches.")
+                else:
+                    keywords = [k.lower().strip() for k in st.session_state.recurring if k.strip()]
+                    matched = base_df[
+                        base_df["Details"].astype(str).str.lower().apply(lambda s: any(k in s for k in keywords))
+                    ].copy()
+
+                    matched = matched.sort_values("Date", ascending=False)
+
+                    st.dataframe(
+                        matched[["Date", "Details", "Amount"]],
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "Date": st.column_config.DateColumn("Date", format="DD/MM/YYYY"),
+                            "Amount": st.column_config.NumberColumn("Amount", format="%.2f CAD"),
+                        },
+                    )
+
+                    st.subheader("Recurring summary (by merchant)")
+                    summary = (
+                        matched.groupby("Details")["Amount"]
+                        .agg(Occurrences="count", Total="sum", Average="mean")
+                        .reset_index()
+                        .sort_values("Total", ascending=False)
+                    )
+
+                    matched["Month"] = matched["Date"].dt.to_period("M").astype(str)
+                    monthly_totals = (
+                        matched.groupby(["Details", "Month"])["Amount"].sum().reset_index()
+                    )
+                    monthly_estimate = (
+                        monthly_totals.groupby("Details")["Amount"].mean().reset_index(name="Monthly Estimate")
+                    )
+
+                    summary = summary.merge(monthly_estimate, on="Details", how="left")
+
+                    st.dataframe(
+                        summary,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "Total": st.column_config.NumberColumn("Total", format="%.2f CAD"),
+                            "Average": st.column_config.NumberColumn("Average", format="%.2f CAD"),
+                            "Monthly Estimate": st.column_config.NumberColumn("Monthly Estimate", format="%.2f CAD"),
+                        },
+                    )
+
+                st.divider()
+
+                st.subheader("Auto-detected recurring candidates")
+
+                tmp = base_df.copy()
+                tmp["Month"] = tmp["Date"].dt.to_period("M").astype(str)
+
+                candidates = (
+                    tmp.groupby("Details")
+                    .agg(
+                        Months=("Month", "nunique"),
+                        Occurrences=("Details", "size"),
+                        Total=("Amount", "sum"),
+                        Avg=("Amount", "mean"),
+                    )
+                    .reset_index()
+                    .sort_values(["Months", "Total"], ascending=[False, False])
+                )
+
+                min_months = st.slider("Minimum distinct months to consider recurring", 2, 12, 3)
+                candidates = candidates[candidates["Months"] >= min_months].head(50)
+
+                st.dataframe(
+                    candidates,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Total": st.column_config.NumberColumn("Total", format="%.2f CAD"),
+                        "Avg": st.column_config.NumberColumn("Avg", format="%.2f CAD"),
+                    },
+                )
+
+                st.caption("Tip: Copy a merchant name (or a short part of it) from this table into the keyword box above.")
+
 
 main()
