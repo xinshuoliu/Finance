@@ -69,34 +69,181 @@ def save_recurring():
         json.dump(st.session_state.recurring, f)
 
 
+DATE_ALIASES = [
+    "transaction date", "date", "posted date", "trade date", "date de transaction", "date d'opération", "date operation"
+]
+DETAILS_ALIASES = [
+    "description", "details", "merchant", "payee", "name", "memo", "libellé", "référence", "reference"
+]
+AMOUNT_ALIASES = [
+    "transaction amount", "amount", "montant", "valeur", "amount (cad)", "amount cad"
+]
+DEBIT_ALIASES = ["debit", "withdrawal", "sortie", "débit"]
+CREDIT_ALIASES = ["credit", "deposit", "entrée", "crédit"]
+
+def _norm_col(c: str) -> str:
+    return str(c).strip().lower()
+
+def _find_col(df, aliases):
+    cols = list(df.columns)
+    norm = {c: _norm_col(c) for c in cols}
+
+    # exact match
+    for a in aliases:
+        a = a.lower()
+        for c, n in norm.items():
+            if n == a:
+                return c
+
+    # contains match
+    for a in aliases:
+        a = a.lower()
+        for c, n in norm.items():
+            if a in n:
+                return c
+
+    return None
+
+def _smart_read_csv(file) -> pd.DataFrame:
+    """
+    Try reading with multiple skiprows values (banks often add extra header lines).
+    Picks the version with the most columns.
+    """
+    best_df = None
+    best_cols = -1
+
+    for skip in [0, 1, 2, 3, 4, 5, 6]:
+        try:
+            file.seek(0)
+            df = pd.read_csv(file, skiprows=skip)
+            if df.shape[1] > best_cols:
+                best_df = df
+                best_cols = df.shape[1]
+        except Exception:
+            continue
+
+    if best_df is None:
+        raise ValueError("Could not read CSV (tried multiple header offsets).")
+
+    best_df.columns = [str(c).strip() for c in best_df.columns]
+    return best_df
+
+def _parse_amount_series(s: pd.Series) -> pd.Series:
+    # Handles "$1,234.56", "1 234,56" (partially), commas, spaces
+    s = s.astype(str).str.strip()
+    s = s.str.replace("$", "", regex=False)
+    s = s.str.replace(",", "", regex=False)
+    s = s.str.replace(" ", "", regex=False)
+    s = s.replace({"": None, "nan": None, "None": None})
+    return pd.to_numeric(s, errors="coerce")
+
+def _mapping_ui(df: pd.DataFrame) -> dict | None:
+    st.warning("I couldn't auto-detect your bank CSV format. Please map the columns manually.")
+    cols = list(df.columns)
+
+    date_col = st.selectbox("Date column", options=cols, key="map_date")
+    details_col = st.selectbox("Details / Description column", options=cols, key="map_details")
+
+    mode = st.radio(
+        "Amount format",
+        ["Single amount column (sign indicates debit/credit)", "Separate Debit and Credit columns"],
+        key="map_mode"
+    )
+
+    if mode.startswith("Single"):
+        amount_col = st.selectbox("Amount column", options=cols, key="map_amount")
+        return {
+            "mode": "single",
+            "date_col": date_col,
+            "details_col": details_col,
+            "amount_col": amount_col
+        }
+    else:
+        debit_col = st.selectbox("Debit column (money out)", options=cols, key="map_debit")
+        credit_col = st.selectbox("Credit column (money in)", options=cols, key="map_credit")
+        return {
+            "mode": "split",
+            "date_col": date_col,
+            "details_col": details_col,
+            "debit_col": debit_col,
+            "credit_col": credit_col
+        }
+
+def _normalize_transactions(df_raw: pd.DataFrame, mapping: dict) -> pd.DataFrame:
+    out = pd.DataFrame()
+
+    # Date parsing: infer formats (YYYY-MM-DD, DD/MM/YYYY, YYYYMMDD, etc.)
+    out["Date"] = pd.to_datetime(df_raw[mapping["date_col"]], errors="coerce", infer_datetime_format=True)
+
+    out["Details"] = df_raw[mapping["details_col"]].astype(str).str.strip()
+
+    if mapping["mode"] == "single":
+        amt = _parse_amount_series(df_raw[mapping["amount_col"]])
+        out["Debit/Credit"] = amt.apply(lambda x: "Credit" if pd.notna(x) and x < 0 else "Debit")
+        out["Amount"] = amt.abs()
+    else:
+        debit = _parse_amount_series(df_raw[mapping["debit_col"]]).fillna(0)
+        credit = _parse_amount_series(df_raw[mapping["credit_col"]]).fillna(0)
+
+        # If credit is positive and debit is positive:
+        out["Debit/Credit"] = (credit > 0).map({True: "Credit", False: "Debit"})
+        out["Amount"] = (debit + credit).abs()
+
+    out = out.dropna(subset=["Date", "Amount"])
+    out = out[["Date", "Details", "Amount", "Debit/Credit"]]
+    return out
+
+
+
 def load_transactions(file):
     try:
-        df = pd.read_csv(file, skiprows=2)
+        df_raw = _smart_read_csv(file)
 
-        df.columns = [c.strip() for c in df.columns]
+        # ---- Attempt auto-detect mapping ----
+        date_col = _find_col(df_raw, DATE_ALIASES)
+        details_col = _find_col(df_raw, DETAILS_ALIASES)
 
-        df["Details"] = df["Description"].astype(str).str.strip()
+        amount_col = _find_col(df_raw, AMOUNT_ALIASES)
+        debit_col = _find_col(df_raw, DEBIT_ALIASES)
+        credit_col = _find_col(df_raw, CREDIT_ALIASES)
 
-        df["Amount"] = (
-            df["Transaction Amount"]
-            .astype(str)
-            .str.replace(",", "", regex=False)
-            .astype(float)
-        )
+        mapping = None
 
-        df["Debit/Credit"] = df["Amount"].apply(lambda x: "Credit" if x < 0 else "Debit")
+        # Auto-detect: single amount column
+        if date_col and details_col and amount_col:
+            mapping = {
+                "mode": "single",
+                "date_col": date_col,
+                "details_col": details_col,
+                "amount_col": amount_col
+            }
 
-        df["Date"] = pd.to_datetime(df["Transaction Date"].astype(str), format="%Y%m%d")
+        # Auto-detect: split debit/credit
+        elif date_col and details_col and debit_col and credit_col:
+            mapping = {
+                "mode": "split",
+                "date_col": date_col,
+                "details_col": details_col,
+                "debit_col": debit_col,
+                "credit_col": credit_col
+            }
 
-        df["Amount"] = df["Amount"].abs()
+        # ---- Manual mapping fallback ----
+        if mapping is None:
+            st.info("Auto-detection failed. Showing manual import mapping.")
+            mapping = _mapping_ui(df_raw)
+            if mapping is None:
+                return None
 
-        df = df[["Date", "Details", "Amount", "Debit/Credit"]]
+        df = _normalize_transactions(df_raw, mapping)
 
+        # Keep your existing categorization behavior
         return categorize_transactions(df)
 
     except Exception as e:
         st.error(f"error processing file: {str(e)}")
         return None
+
     
 def add_keyword_to_category(category, keyword):
     keyword = str(keyword).strip()
