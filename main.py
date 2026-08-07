@@ -7,7 +7,7 @@ import plotly.express as px
 import streamlit as st
 
 from ai.cache import MerchantCache
-from ai.categorize import Categorization, categorize_keys
+from ai.categorize import Categorization, categorize_keys, record_user_correction
 from ai.config import CATEGORIES, CATEGORY_RULES_FILE, ai_available
 from ai.migrate import migrate_legacy
 from ai.normalize import normalize
@@ -22,7 +22,7 @@ recurring_file = "recurring.json"
 
 @st.cache_resource
 def get_ai_stores() -> tuple[RuleStore, MerchantCache]:
-    """Charge règles et cache marchand ; migre l'ancien système au premier lancement."""
+    """Load rules and merchant cache; migrate the legacy system on first launch."""
     run_migration = not CATEGORY_RULES_FILE.exists() and os.path.exists(category_file)
     rules = RuleStore()
     cache = MerchantCache()
@@ -63,7 +63,7 @@ def save_recurring():
 
 
 def apply_ai_categories(df: pd.DataFrame) -> pd.DataFrame:
-    """Catégorise le DataFrame via la cascade cache -> règles -> IA."""
+    """Categorize the DataFrame through the cache -> rules -> AI cascade."""
     df = df.copy()
     df["Merchant"] = df["Details"].map(normalize)
     use_llm = ai_available() and not st.session_state.get("ai_llm_down", False)
@@ -343,30 +343,30 @@ def main():
     if df is None:
         return
 
-    with st.spinner("Catégorisation des transactions…"):
+    with st.spinner("Categorizing transactions…"):
         df = apply_ai_categories(df)
 
     if ai_available():
         source_counts = df["Source"].value_counts()
         st.caption(
-            "🤖 Catégorisation — "
-            f"cache : {int(source_counts.get('cache', 0))}, "
-            f"règles : {int(source_counts.get('rule', 0))}, "
-            f"IA : {int(source_counts.get('llm', 0))}, "
-            f"à revoir : {int(df['NeedsReview'].sum())}"
+            "🤖 Categorization — "
+            f"cache: {int(source_counts.get('cache', 0))}, "
+            f"rules: {int(source_counts.get('rule', 0))}, "
+            f"AI: {int(source_counts.get('llm', 0))}, "
+            f"needs review: {int(df['NeedsReview'].sum())}"
         )
         if st.session_state.get("ai_llm_down"):
             st.warning(
-                "L'appel à l'API Anthropic a échoué — les marchands inconnus sont "
-                "classés « Autre » temporairement."
+                "The Anthropic API call failed — unknown merchants are filed "
+                "under \"Autre\" for now."
             )
-            if st.button("Réessayer l'IA"):
+            if st.button("Retry AI"):
                 st.session_state.ai_llm_down = False
                 st.rerun()
     else:
         st.caption(
-            "🤖 IA désactivée — ajoutez ANTHROPIC_API_KEY dans un fichier .env "
-            "pour activer la catégorisation automatique."
+            "🤖 AI disabled — add ANTHROPIC_API_KEY to a .env file to enable "
+            "automatic categorization."
         )
 
     st.subheader("Filters")
@@ -424,24 +424,28 @@ def main():
 
     st.session_state.debits_df = debits_df.copy()
 
-    tab1, tab2, tab3 = st.tabs(["Expenses (Debits)", "Payments (Credits)", "Recurring"])
+    tab1, tab2, tab_review, tab3 = st.tabs(
+        ["Expenses (Debits)", "Payments (Credits)", "Review", "Recurring"]
+    )
 
     with tab1:
         st.subheader("Your Expenses")
+        if message := st.session_state.pop("correction_message", None):
+            st.success(message)
         st.caption(
-            "Corrigez une catégorie puis cliquez « Apply Changes » : une règle est créée "
-            "et s'appliquera automatiquement à ce marchand dans les prochains relevés."
+            "Fix a category and click Apply Changes: a rule is created and will "
+            "apply to this merchant in every future statement."
         )
         edited_df = st.data_editor(
             st.session_state.debits_df[["Date", "Details", "Amount", "Category", "Confidence", "NeedsReview"]],
             column_config={
                 "Date": st.column_config.DateColumn("Date", format="DD/MM/YYYY"),
                 "Amount": st.column_config.NumberColumn("Amount", format="%.2f CAD"),
-                "Category": st.column_config.SelectboxColumn("Catégorie", options=CATEGORIES),
+                "Category": st.column_config.SelectboxColumn("Category", options=CATEGORIES),
                 "Confidence": st.column_config.ProgressColumn(
-                    "Confiance", min_value=0.0, max_value=1.0
+                    "Confidence", min_value=0.0, max_value=1.0
                 ),
-                "NeedsReview": st.column_config.CheckboxColumn("À revoir"),
+                "NeedsReview": st.column_config.CheckboxColumn("Review"),
             },
             disabled=["Date", "Details", "Amount", "Confidence", "NeedsReview"],
             hide_index=True,
@@ -450,21 +454,26 @@ def main():
         )
         save_button = st.button("Apply Changes", type="primary")
         if save_button:
-            changed = False
+            corrected_merchants = 0
+            matching_transactions = 0
             for idx, row in edited_df.iterrows():
                 chosen_category = row["Category"]
                 if chosen_category == st.session_state.debits_df.at[idx, "Category"]:
                     continue
                 merchant_key = st.session_state.debits_df.at[idx, "Merchant"]
-                if not merchant_key:
+                if not record_user_correction(
+                    merchant_key, chosen_category, merchant_cache, rules_store, save=False
+                ):
                     continue
-                # The user's decision becomes a deterministic rule + cache entry
-                rules_store.add(merchant_key, chosen_category, source="user")
-                merchant_cache.set(merchant_key, chosen_category, 1.0, "user")
-                changed = True
-            if changed:
+                corrected_merchants += 1
+                matching_transactions += int((df["Merchant"] == merchant_key).sum())
+            if corrected_merchants:
                 rules_store.save()
                 merchant_cache.save()
+                st.session_state.correction_message = (
+                    f"{matching_transactions} similar transactions updated "
+                    f"({corrected_merchants} new rules)."
+                )
                 st.rerun()
 
         st.subheader("Expense Summary")
@@ -547,6 +556,80 @@ def main():
                 "Amount": st.column_config.NumberColumn("Amount", format="%.2f CAD"),
             },
         )
+
+    with tab_review:
+        st.subheader("Review queue")
+
+        if message := st.session_state.pop("review_message", None):
+            st.success(message)
+
+        review_df = df[df["NeedsReview"]].copy()
+        if review_df.empty:
+            st.success("Nothing to review — every merchant is categorized with good confidence.")
+        else:
+            review_summary = (
+                review_df.groupby("Merchant")
+                .agg(
+                    Transactions=("Merchant", "size"),
+                    Total=("Amount", "sum"),
+                    Confidence=("Confidence", "max"),
+                    Category=("Category", "first"),
+                )
+                .reset_index()
+                .sort_values("Total", ascending=False)
+                .reset_index(drop=True)
+            )
+            st.caption(
+                f"{len(review_summary)} merchants ({len(review_df)} transactions) the AI "
+                "wasn't sure about. Pick the right category, then apply — each decision "
+                "becomes a permanent rule."
+            )
+            edited_review = st.data_editor(
+                review_summary,
+                column_config={
+                    "Merchant": st.column_config.TextColumn("Merchant"),
+                    "Transactions": st.column_config.NumberColumn("Transactions"),
+                    "Total": st.column_config.NumberColumn("Total", format="%.2f CAD"),
+                    "Confidence": st.column_config.ProgressColumn(
+                        "Confidence", min_value=0.0, max_value=1.0
+                    ),
+                    "Category": st.column_config.SelectboxColumn("Category", options=CATEGORIES),
+                },
+                disabled=["Merchant", "Transactions", "Total", "Confidence"],
+                hide_index=True,
+                width="stretch",
+                key="review_editor",
+            )
+
+            def _apply_review(rows: pd.DataFrame, only_changed: bool) -> None:
+                corrected = 0
+                matching = 0
+                for i, row in rows.iterrows():
+                    if only_changed and row["Category"] == review_summary.at[i, "Category"]:
+                        continue
+                    if not record_user_correction(
+                        row["Merchant"], row["Category"], merchant_cache, rules_store, save=False
+                    ):
+                        continue
+                    corrected += 1
+                    matching += int((df["Merchant"] == row["Merchant"]).sum())
+                if corrected:
+                    rules_store.save()
+                    merchant_cache.save()
+                    st.session_state.review_message = (
+                        f"{matching} similar transactions updated ({corrected} new rules)."
+                    )
+                    st.rerun()
+                else:
+                    st.info("No category was changed.")
+
+            colR1, colR2 = st.columns([1, 2])
+            with colR1:
+                if st.button("Apply corrections", type="primary"):
+                    _apply_review(edited_review, only_changed=True)
+            with colR2:
+                if st.button("Confirm all shown suggestions"):
+                    _apply_review(edited_review, only_changed=False)
 
     with tab3:
         st.subheader("Recurring payments / subscriptions")
