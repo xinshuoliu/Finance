@@ -128,8 +128,12 @@ harness (`eval/`). Key design decisions:
   Local AI state lives in `data/` (gitignored). API key goes in `.env`
   (gitignored) as `ANTHROPIC_API_KEY=...`.
 - **Models**: `claude-haiku-4-5` for merchant classification (cheap, batched
-  ~30/request), `claude-sonnet-5` for the French narrative. Pricing constants
+  ~30/request), `claude-sonnet-5` for the monthly narrative. Pricing constants
   live in one marked block in `ai/config.py`.
+- **Language**: the UI, docstrings and narrative are in **English** (user
+  decision, 2026-08-07). Only the category *labels* stay French — they are
+  the spec's closed set and all stored data (rules, cache, budgets) is keyed
+  on them. The categorizer prompt is French on purpose (Quebec merchants).
 
 **Phase 1 (done)** — `ai/normalize.py` collapses bank description variants to
 stable merchant keys (strips ref numbers, `#`/`*` suffixes, POS/ACHAT/INTERAC
@@ -157,15 +161,35 @@ tokens, trailing city+province); `ai/cache.py` persists merchant → category in
   (restaurant→Restaurant, gym+Activities→Loisirs…). Runs automatically at
   first app start; the existence of the rules file marks it done.
 - `main.py` — the old keyword system is gone. Transactions get
-  `Category`/`Confiance`/`Source`/`À revoir` columns; a caption shows how
+  `Category`/`Confidence`/`Source`/`NeedsReview` columns; a caption shows how
   many came from cache/rules/AI; correcting a category in the table creates
   a rule + cache entry so the merchant stays fixed forever. Category list
   is now the closed French set (also for budgets).
+
+**Phase 3 (done)** — Review queue and rule learning:
+
+- New **Review** tab: merchants the AI wasn't sure about (`needs_review`),
+  grouped per merchant with transaction count, total and confidence. Pick
+  the right category and *Apply corrections* (changed rows only) or
+  *Confirm all shown suggestions* (records every shown row as user-confirmed).
+- Every correction does three things: updates the transactions, writes a
+  `source: "user"` rule to `data/category_rules.json`, and re-applies it —
+  the success message shows "N similar transactions updated (M new rules)".
+- User rules are inserted *before* legacy rules and override a stale cache
+  entry, so a correction always wins.
+- Corrections survive re-importing the same statement (and API downtime) —
+  proven by `tests/test_review_flow.py`.
 
 ---
 
 ## Changelog
 
+- **2026-08-07** — AI layer Phase 3: Review tab (review queue with per-merchant
+  corrections and "N similar transactions updated" feedback); all UI strings
+  and docstrings switched to English; re-import survival tests.
+- **2026-08-07** — AI layer Phase 2: cascading categorizer (cache → rules →
+  Claude Haiku) wired into the dashboard; privacy guard; API call logging;
+  legacy keywords/budgets migrated to the closed French category set.
 - **2026-08-07** — AI layer Phase 1: merchant normalization (`ai/normalize.py`),
   persistent categorization cache (`ai/cache.py`), AI config with pricing
   constants (`ai/config.py`), offline pytest suite (`tests/`).
