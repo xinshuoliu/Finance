@@ -11,6 +11,7 @@ from ai.categorize import Categorization, categorize_keys, record_user_correctio
 from ai.config import CATEGORIES, CATEGORY_RULES_FILE, ai_available
 from ai.migrate import migrate_legacy
 from ai.normalize import normalize
+from ai.query import FilterSpec, QueryTranslationError, execute_spec, translate_question
 from ai.rules import RuleStore
 
 st.set_page_config(page_title="Simple Finance App", page_icon="💰", layout="wide")
@@ -424,8 +425,8 @@ def main():
 
     st.session_state.debits_df = debits_df.copy()
 
-    tab1, tab2, tab_review, tab3 = st.tabs(
-        ["Expenses (Debits)", "Payments (Credits)", "Review", "Recurring"]
+    tab1, tab2, tab_review, tab3, tab_ask = st.tabs(
+        ["Expenses (Debits)", "Payments (Credits)", "Review", "Recurring", "Ask"]
     )
 
     with tab1:
@@ -749,6 +750,72 @@ def main():
         )
 
         st.caption("Tip: Copy a merchant name (or a short part of it) from this table into the keyword box above.")
+
+    with tab_ask:
+        st.subheader("Ask about your transactions")
+        st.caption(
+            "Your question is translated into a validated filter (never code) and "
+            "computed locally with pandas. The filters above do not apply here."
+        )
+        question = st.text_input(
+            "Question",
+            placeholder='e.g. "How much did I spend on restaurants since January?"',
+            key="ask_question",
+        )
+        if st.button("Ask", type="primary"):
+            if not ai_available():
+                st.session_state.ask_error = (
+                    "AI is not configured — add ANTHROPIC_API_KEY to a .env file."
+                )
+                st.session_state.ask_spec = None
+            else:
+                with st.spinner("Interpreting your question…"):
+                    try:
+                        spec = translate_question(question)
+                        st.session_state.ask_spec = spec.model_dump_json()
+                        st.session_state.ask_error = None
+                    except QueryTranslationError as exc:
+                        st.session_state.ask_error = str(exc)
+                        st.session_state.ask_spec = None
+
+        if error := st.session_state.get("ask_error"):
+            st.error(error)
+        elif spec_json := st.session_state.get("ask_spec"):
+            spec = FilterSpec.model_validate_json(spec_json)
+            result = execute_spec(spec, df)
+            st.caption(f"Interpreted as: {result.description}")
+
+            if result.filtered.empty:
+                st.info("No transactions match this filter.")
+            elif result.table is not None:
+                x_col, y_col = result.table.columns[0], result.table.columns[1]
+                fig = px.bar(result.table, x=x_col, y=y_col, title=result.description)
+                st.plotly_chart(fig, width="stretch")
+                st.dataframe(
+                    result.table,
+                    width="stretch",
+                    hide_index=True,
+                    column_config={
+                        y_col: st.column_config.NumberColumn(
+                            y_col, format="%d" if spec.aggregate == "count" else "%.2f CAD"
+                        )
+                    },
+                )
+            else:
+                if spec.aggregate == "count":
+                    st.metric("Result", f"{int(result.value)}")
+                else:
+                    st.metric("Result", f"{result.value:,.2f} CAD")
+                with st.expander(f"Matching transactions ({len(result.filtered)})"):
+                    st.dataframe(
+                        result.filtered[["Date", "Details", "Amount", "Category"]],
+                        width="stretch",
+                        hide_index=True,
+                        column_config={
+                            "Date": st.column_config.DateColumn("Date", format="DD/MM/YYYY"),
+                            "Amount": st.column_config.NumberColumn("Amount", format="%.2f CAD"),
+                        },
+                    )
 
 
 if __name__ == "__main__":
