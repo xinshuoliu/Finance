@@ -138,6 +138,30 @@ tokens, trailing city+province); `ai/cache.py` persists merchant → category in
 `ai/config.py` holds models/pricing/thresholds. Tests: `python -m pytest`
 (offline, no API calls).
 
+**Phase 2 (done)** — Cascading categorizer wired into the dashboard:
+
+- `ai/categorize.py` — cascade **cache → rules → Claude Haiku** (batches of
+  ~30 merchants, structured outputs lock the category to the closed set,
+  one retry on invalid output, `Autre`+`à revoir` fallback). API transport
+  failures are *not* cached so they retry later; model verdicts are.
+- `ai/privacy.py` — the only builder of outbound payloads; accepts merchant
+  strings only, anything else raises `TypeError` (unit-tested: no amount can
+  reach the API by construction).
+- `ai/llm_log.py` — every API call goes through `logged_call()`: model,
+  tokens, latency, prompt-cache stats and cost (from the pricing block) are
+  appended to `data/api_log.jsonl`.
+- `ai/rules.py` — deterministic rules in `data/category_rules.json`
+  (substring or regex, first match wins, user rules take precedence).
+- `ai/migrate.py` — one-time migration: legacy learned keywords →
+  normalized rules with French categories; budgets re-keyed
+  (restaurant→Restaurant, gym+Activities→Loisirs…). Runs automatically at
+  first app start; the existence of the rules file marks it done.
+- `main.py` — the old keyword system is gone. Transactions get
+  `Category`/`Confiance`/`Source`/`À revoir` columns; a caption shows how
+  many came from cache/rules/AI; correcting a category in the table creates
+  a rule + cache entry so the merchant stays fixed forever. Category list
+  is now the closed French set (also for budgets).
+
 ---
 
 ## Changelog
