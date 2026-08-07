@@ -26,3 +26,16 @@ def build_categorization_payload(merchant_keys: Sequence[str]) -> str:
                 f"Only merchant strings may be sent to the API (got {type(key).__name__})"
             )
     return json.dumps(keys, ensure_ascii=False)
+
+
+def build_query_payload(question: str) -> str:
+    """Build the user message for query translation: the user's own question only.
+
+    The question is user-authored text and may be sent verbatim; anything
+    that is not a plain string raises TypeError.
+    """
+    if not isinstance(question, str):
+        raise TypeError(
+            f"Only the user's question string may be sent to the API (got {type(question).__name__})"
+        )
+    return question.strip()

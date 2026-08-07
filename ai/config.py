@@ -33,6 +33,7 @@ CATEGORIES = [
 ]
 
 MODEL_CATEGORIZER = "claude-haiku-4-5-20251001"
+MODEL_QUERY = "claude-haiku-4-5-20251001"
 MODEL_NARRATIVE = "claude-sonnet-5"
 
 # =====================================================================
