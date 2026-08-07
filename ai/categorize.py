@@ -16,15 +16,13 @@ import json
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-import anthropic
-
 from ai.cache import MerchantCache
+from ai.client import get_client
 from ai.config import (
     CATEGORIES,
     CATEGORIZER_BATCH_SIZE,
     CONFIDENCE_THRESHOLD,
     MODEL_CATEGORIZER,
-    ai_available,
 )
 from ai.llm_log import log_event, logged_call
 from ai.privacy import build_categorization_payload
@@ -39,18 +37,6 @@ class Categorization:
     confidence: float
     source: str  # "cache" | "rule" | "llm" | "fallback"
     needs_review: bool = False
-
-
-_client: anthropic.Anthropic | None = None
-
-
-def _get_client() -> anthropic.Anthropic | None:
-    global _client
-    if not ai_available():
-        return None
-    if _client is None:
-        _client = anthropic.Anthropic(timeout=30.0)
-    return _client
 
 
 # Structured-outputs schema: the category field is locked to the closed set,
@@ -198,7 +184,7 @@ def categorize_keys(
     llm_count = fallback_count = 0
     if unknown:
         if use_llm:
-            client = client if client is not None else _get_client()
+            client = client if client is not None else get_client()
         else:
             client = None
 
