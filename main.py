@@ -6,11 +6,32 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from ai.cache import MerchantCache
+from ai.categorize import Categorization, categorize_keys
+from ai.config import CATEGORIES, CATEGORY_RULES_FILE, ai_available
+from ai.migrate import migrate_legacy
+from ai.normalize import normalize
+from ai.rules import RuleStore
+
 st.set_page_config(page_title="Simple Finance App", page_icon="💰", layout="wide")
 
 category_file = "categories.json"
 budget_file = "budgets.json"
 recurring_file = "recurring.json"
+
+
+@st.cache_resource
+def get_ai_stores() -> tuple[RuleStore, MerchantCache]:
+    """Charge règles et cache marchand ; migre l'ancien système au premier lancement."""
+    run_migration = not CATEGORY_RULES_FILE.exists() and os.path.exists(category_file)
+    rules = RuleStore()
+    cache = MerchantCache()
+    if run_migration:
+        migrate_legacy(category_file, budget_file, rules)
+    return rules, cache
+
+
+rules_store, merchant_cache = get_ai_stores()
 
 if "budgets" not in st.session_state:
     st.session_state.budgets = {}
@@ -21,16 +42,6 @@ if "budgets" not in st.session_state:
         except Exception:
             st.session_state.budgets = {}
 
-if "categories" not in st.session_state:
-    st.session_state.categories = {"Uncategorized": []}
-    if os.path.exists(category_file):
-        try:
-            with open(category_file, "r", encoding="utf-8") as f:
-                st.session_state.categories = json.load(f)
-        except Exception:
-            st.session_state.categories = {"Uncategorized": []}
-    st.session_state.categories.setdefault("Uncategorized", [])
-
 if "recurring" not in st.session_state:
     st.session_state.recurring = []
     if os.path.exists(recurring_file):
@@ -39,11 +50,6 @@ if "recurring" not in st.session_state:
                 st.session_state.recurring = json.load(f)
         except Exception:
             st.session_state.recurring = []
-
-
-def save_categories():
-    with open(category_file, "w", encoding="utf-8") as f:
-        json.dump(st.session_state.categories, f, ensure_ascii=False)
 
 
 def save_budgets():
@@ -56,19 +62,22 @@ def save_recurring():
         json.dump(st.session_state.recurring, f, ensure_ascii=False)
 
 
-def categorize_transactions(df):
-    df["Category"] = "Uncategorized"
-    details_lower = df["Details"].astype(str).str.lower().str.strip()
+def apply_ai_categories(df: pd.DataFrame) -> pd.DataFrame:
+    """Catégorise le DataFrame via la cascade cache -> règles -> IA."""
+    df = df.copy()
+    df["Merchant"] = df["Details"].map(normalize)
+    use_llm = ai_available() and not st.session_state.get("ai_llm_down", False)
+    results = categorize_keys(df["Merchant"].tolist(), merchant_cache, rules_store, use_llm=use_llm)
 
-    for category, keywords in st.session_state.categories.items():
-        if category == "Uncategorized" or not keywords:
-            continue
-        lowered_keywords = [str(k).lower().strip() for k in keywords if str(k).strip()]
-        if not lowered_keywords:
-            continue
-        mask = details_lower.apply(lambda s: any(k in s for k in lowered_keywords))
-        df.loc[mask, "Category"] = category
+    default = Categorization("Autre", 0.0, "fallback", True)
+    df["Category"] = [results.get(k, default).category for k in df["Merchant"]]
+    df["Confidence"] = [results.get(k, default).confidence for k in df["Merchant"]]
+    df["Source"] = [results.get(k, default).source for k in df["Merchant"]]
+    df["NeedsReview"] = [results.get(k, default).needs_review for k in df["Merchant"]]
 
+    if use_llm and any(r.source == "fallback" for r in results.values()):
+        # The API failed this run: stop retrying on every rerun of this session
+        st.session_state.ai_llm_down = True
     return df
 
 
@@ -318,24 +327,7 @@ def load_transactions(file):
         st.session_state.pop("manual_mapping", None)
         return None
 
-    return categorize_transactions(df)
-
-
-def add_keyword_to_category(category, keyword):
-    keyword = str(keyword).strip()
-    if not keyword:
-        return False
-
-    if category not in st.session_state.categories:
-        st.session_state.categories[category] = []
-
-    existing = {k.lower().strip() for k in st.session_state.categories[category]}
-    if keyword.lower() in existing:
-        return False
-
-    st.session_state.categories[category].append(keyword)
-    save_categories()
-    return True
+    return df
 
 
 def main():
@@ -350,6 +342,32 @@ def main():
     df = load_transactions(uploaded_file)
     if df is None:
         return
+
+    with st.spinner("Catégorisation des transactions…"):
+        df = apply_ai_categories(df)
+
+    if ai_available():
+        source_counts = df["Source"].value_counts()
+        st.caption(
+            "🤖 Catégorisation — "
+            f"cache : {int(source_counts.get('cache', 0))}, "
+            f"règles : {int(source_counts.get('rule', 0))}, "
+            f"IA : {int(source_counts.get('llm', 0))}, "
+            f"à revoir : {int(df['NeedsReview'].sum())}"
+        )
+        if st.session_state.get("ai_llm_down"):
+            st.warning(
+                "L'appel à l'API Anthropic a échoué — les marchands inconnus sont "
+                "classés « Autre » temporairement."
+            )
+            if st.button("Réessayer l'IA"):
+                st.session_state.ai_llm_down = False
+                st.rerun()
+    else:
+        st.caption(
+            "🤖 IA désactivée — ajoutez ANTHROPIC_API_KEY dans un fichier .env "
+            "pour activer la catégorisation automatique."
+        )
 
     st.subheader("Filters")
 
@@ -409,26 +427,23 @@ def main():
     tab1, tab2, tab3 = st.tabs(["Expenses (Debits)", "Payments (Credits)", "Recurring"])
 
     with tab1:
-        new_category = st.text_input("New Category Name")
-        add_button = st.button("Add Category")
-
-        if add_button and new_category:
-            if new_category not in st.session_state.categories:
-                st.session_state.categories[new_category] = []
-                save_categories()
-                st.rerun()
-
         st.subheader("Your Expenses")
+        st.caption(
+            "Corrigez une catégorie puis cliquez « Apply Changes » : une règle est créée "
+            "et s'appliquera automatiquement à ce marchand dans les prochains relevés."
+        )
         edited_df = st.data_editor(
-            st.session_state.debits_df[["Date", "Details", "Amount", "Category"]],
+            st.session_state.debits_df[["Date", "Details", "Amount", "Category", "Confidence", "NeedsReview"]],
             column_config={
                 "Date": st.column_config.DateColumn("Date", format="DD/MM/YYYY"),
                 "Amount": st.column_config.NumberColumn("Amount", format="%.2f CAD"),
-                "Category": st.column_config.SelectboxColumn(
-                    "Category",
-                    options=list(st.session_state.categories.keys())
+                "Category": st.column_config.SelectboxColumn("Catégorie", options=CATEGORIES),
+                "Confidence": st.column_config.ProgressColumn(
+                    "Confiance", min_value=0.0, max_value=1.0
                 ),
+                "NeedsReview": st.column_config.CheckboxColumn("À revoir"),
             },
+            disabled=["Date", "Details", "Amount", "Confidence", "NeedsReview"],
             hide_index=True,
             width="stretch",
             key="category_editor",
@@ -440,10 +455,16 @@ def main():
                 chosen_category = row["Category"]
                 if chosen_category == st.session_state.debits_df.at[idx, "Category"]:
                     continue
-                st.session_state.debits_df.at[idx, "Category"] = chosen_category
-                add_keyword_to_category(chosen_category, row["Details"])
+                merchant_key = st.session_state.debits_df.at[idx, "Merchant"]
+                if not merchant_key:
+                    continue
+                # The user's decision becomes a deterministic rule + cache entry
+                rules_store.add(merchant_key, chosen_category, source="user")
+                merchant_cache.set(merchant_key, chosen_category, 1.0, "user")
                 changed = True
             if changed:
+                rules_store.save()
+                merchant_cache.save()
                 st.rerun()
 
         st.subheader("Expense Summary")
@@ -461,8 +482,7 @@ def main():
 
         st.subheader("Budgets (per category)")
 
-        cats = list(st.session_state.categories.keys())
-        selected_cat = st.selectbox("Choose a category", options=cats)
+        selected_cat = st.selectbox("Choose a category", options=CATEGORIES)
 
         current_budget = float(st.session_state.budgets.get(selected_cat, 0) or 0.0)
         new_budget = st.number_input(
