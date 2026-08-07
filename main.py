@@ -1,6 +1,5 @@
 import json
 import os
-import re
 
 import pandas as pd
 import plotly.express as px
@@ -15,6 +14,7 @@ from ai.normalize import normalize
 from ai.query import FilterSpec, QueryTranslationError, execute_spec, translate_question
 from ai.rules import RuleStore
 from analysis import detect_recurring
+from importer import auto_detect_mapping, mapping_matches, normalize_transactions, smart_read_csv
 
 st.set_page_config(page_title="Simple Finance App", page_icon="💰", layout="wide")
 
@@ -84,136 +84,6 @@ def apply_ai_categories(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-DATE_ALIASES = [
-    "transaction date", "date", "posted date", "trade date",
-    "date de transaction", "date d'opération", "date operation",
-]
-DETAILS_ALIASES = [
-    "description", "details", "merchant", "payee", "name", "memo",
-    "libellé", "référence", "reference",
-]
-AMOUNT_ALIASES = [
-    "transaction amount", "amount", "montant", "valeur", "amount (cad)", "amount cad",
-]
-DEBIT_ALIASES = ["debit", "withdrawal", "sortie", "débit"]
-CREDIT_ALIASES = ["credit", "deposit", "entrée", "crédit"]
-
-
-def _norm_col(c: str) -> str:
-    return str(c).strip().lower()
-
-
-def _find_col(df, aliases):
-    cols = list(df.columns)
-    norm = {c: _norm_col(c) for c in cols}
-
-    # exact match
-    for a in aliases:
-        a = a.lower()
-        for c, n in norm.items():
-            if n == a:
-                return c
-
-    # contains match
-    for a in aliases:
-        a = a.lower()
-        for c, n in norm.items():
-            if a in n:
-                return c
-
-    return None
-
-
-def _smart_read_csv(file) -> pd.DataFrame:
-    """
-    Try several encodings, separators and skiprows values (banks often add
-    preamble lines above the header). Picks the parse with the most columns.
-    """
-    best_df = None
-    best_cols = -1
-
-    for encoding in ("utf-8-sig", "cp1252", "latin-1"):
-        decoded_any = False
-        for sep in (",", ";", "\t"):
-            for skip in range(7):
-                try:
-                    file.seek(0)
-                    df = pd.read_csv(file, skiprows=skip, sep=sep, encoding=encoding)
-                except Exception:
-                    continue
-                decoded_any = True
-                if not df.empty and df.shape[1] > best_cols:
-                    best_df = df
-                    best_cols = df.shape[1]
-        if decoded_any:
-            # This encoding decoded the bytes fine; trying more would only
-            # reinterpret the same data.
-            break
-
-    if best_df is None:
-        raise ValueError("Could not read CSV (tried multiple encodings, separators and header offsets).")
-
-    best_df.columns = [str(c).strip() for c in best_df.columns]
-    return best_df
-
-
-def _clean_amount(value):
-    """Parse one amount string: $1,234.56 / 1 234,56 / (123.45) / -12,50 ..."""
-    v = str(value).strip()
-    if v.lower() in ("", "nan", "none", "-"):
-        return None
-
-    negative = v.startswith("(") and v.endswith(")")
-    if negative:
-        v = v[1:-1]
-    if v.lstrip().startswith("-"):
-        negative = True
-
-    # keep only digits and separators (drops $, spaces, nbsp, currency codes)
-    v = re.sub(r"[^\d,.]", "", v)
-    if not v:
-        return None
-
-    if "," in v and "." in v:
-        # the rightmost separator is the decimal one
-        if v.rfind(",") > v.rfind("."):
-            v = v.replace(".", "").replace(",", ".")
-        else:
-            v = v.replace(",", "")
-    elif "," in v:
-        head, _, tail = v.rpartition(",")
-        if len(tail) <= 2:  # decimal comma: 12,50
-            v = head.replace(",", "") + "." + tail
-        else:  # thousands separator: 1,234
-            v = v.replace(",", "")
-
-    try:
-        n = float(v)
-    except ValueError:
-        return None
-    return -n if negative else n
-
-
-def _parse_amount_series(s: pd.Series) -> pd.Series:
-    return pd.to_numeric(s.map(_clean_amount), errors="coerce")
-
-
-def _parse_dates(series: pd.Series) -> pd.Series:
-    s = series.astype(str).str.strip()
-
-    # Day-first heuristic: if the first component ever exceeds 12 (and the
-    # second never does), the format must be DD/MM/YYYY.
-    dayfirst = False
-    parts = s.str.extract(r"^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})$")
-    if parts[0].notna().any():
-        first = pd.to_numeric(parts[0], errors="coerce")
-        second = pd.to_numeric(parts[1], errors="coerce")
-        if (first > 12).any() and not (second > 12).any():
-            dayfirst = True
-
-    return pd.to_datetime(s, errors="coerce", dayfirst=dayfirst, format="mixed")
-
-
 def _mapping_ui(df: pd.DataFrame) -> dict | None:
     st.warning("Couldn't auto-detect your bank's CSV format. Map the columns manually, then click Apply.")
     cols = list(df.columns)
@@ -251,67 +121,19 @@ def _mapping_ui(df: pd.DataFrame) -> dict | None:
     return None
 
 
-def _normalize_transactions(df_raw: pd.DataFrame, mapping: dict) -> pd.DataFrame:
-    out = pd.DataFrame()
-
-    out["Date"] = _parse_dates(df_raw[mapping["date_col"]])
-    out["Details"] = df_raw[mapping["details_col"]].astype(str).str.strip()
-
-    if mapping["mode"] == "single":
-        amt = _parse_amount_series(df_raw[mapping["amount_col"]])
-        out["Debit/Credit"] = amt.apply(lambda x: "Credit" if pd.notna(x) and x < 0 else "Debit")
-        out["Amount"] = amt.abs()
-    else:
-        debit = _parse_amount_series(df_raw[mapping["debit_col"]]).abs().fillna(0)
-        credit = _parse_amount_series(df_raw[mapping["credit_col"]]).abs().fillna(0)
-        out["Debit/Credit"] = (credit > 0).map({True: "Credit", False: "Debit"})
-        total = debit + credit
-        out["Amount"] = total.where(total > 0)  # rows with no amount at all become NaN
-
-    out = out.dropna(subset=["Date", "Amount"])
-    return out[["Date", "Details", "Amount", "Debit/Credit"]].reset_index(drop=True)
-
-
-def _mapping_matches(mapping: dict, df: pd.DataFrame) -> bool:
-    return all(mapping[k] in df.columns for k in mapping if k.endswith("_col"))
-
-
 def load_transactions(file):
     try:
-        df_raw = _smart_read_csv(file)
+        df_raw = smart_read_csv(file)
     except Exception as e:
         st.error(f"Error processing file: {e}")
         return None
 
-    # ---- Attempt auto-detect mapping ----
-    date_col = _find_col(df_raw, DATE_ALIASES)
-    details_col = _find_col(df_raw, DETAILS_ALIASES)
-    amount_col = _find_col(df_raw, AMOUNT_ALIASES)
-    debit_col = _find_col(df_raw, DEBIT_ALIASES)
-    credit_col = _find_col(df_raw, CREDIT_ALIASES)
-
-    mapping = None
-
-    if date_col and details_col and amount_col:
-        mapping = {
-            "mode": "single",
-            "date_col": date_col,
-            "details_col": details_col,
-            "amount_col": amount_col,
-        }
-    elif date_col and details_col and debit_col and credit_col:
-        mapping = {
-            "mode": "split",
-            "date_col": date_col,
-            "details_col": details_col,
-            "debit_col": debit_col,
-            "credit_col": credit_col,
-        }
+    mapping = auto_detect_mapping(df_raw)
 
     # ---- Manual mapping fallback (persisted per file) ----
     if mapping is None:
         stored = st.session_state.get("manual_mapping")
-        if stored and stored.get("file") == file.name and _mapping_matches(stored["mapping"], df_raw):
+        if stored and stored.get("file") == file.name and mapping_matches(stored["mapping"], df_raw):
             mapping = stored["mapping"]
         else:
             mapping = _mapping_ui(df_raw)
@@ -320,7 +142,7 @@ def load_transactions(file):
             st.session_state.manual_mapping = {"file": file.name, "mapping": mapping}
 
     try:
-        df = _normalize_transactions(df_raw, mapping)
+        df = normalize_transactions(df_raw, mapping)
     except Exception as e:
         st.error(f"Error processing file: {e}")
         return None
