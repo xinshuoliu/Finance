@@ -115,11 +115,13 @@ def _parse_response(text: str, batch: list[str]) -> tuple[dict[str, tuple[str, f
     return out, had_invalid
 
 
-def _attempt_batch(client, batch: list[str]) -> tuple[dict[str, tuple[str, float]] | None, bool]:
+def _attempt_batch(
+    client, batch: list[str], model: str = MODEL_CATEGORIZER
+) -> tuple[dict[str, tuple[str, float]] | None, bool]:
     response = logged_call(
         client,
         purpose="categorize",
-        model=MODEL_CATEGORIZER,
+        model=model,
         max_tokens=4000,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": build_categorization_payload(batch)}],
@@ -129,12 +131,14 @@ def _attempt_batch(client, batch: list[str]) -> tuple[dict[str, tuple[str, float
     return _parse_response(text, batch)
 
 
-def _categorize_batch(client, batch: list[str]) -> dict[str, Categorization]:
+def _categorize_batch(
+    client, batch: list[str], model: str = MODEL_CATEGORIZER
+) -> dict[str, Categorization]:
     """Categorize one batch via the API, retrying once on invalid output."""
-    first, had_invalid = _attempt_batch(client, batch)
+    first, had_invalid = _attempt_batch(client, batch, model)
     merged = dict(first or {})
     if first is None or had_invalid or any(key not in merged for key in batch):
-        second, _ = _attempt_batch(client, batch)
+        second, _ = _attempt_batch(client, batch, model)
         for key, value in (second or {}).items():
             merged.setdefault(key, value)
 
@@ -155,6 +159,7 @@ def categorize_keys(
     rules: RuleStore,
     client=None,
     use_llm: bool = True,
+    model: str = MODEL_CATEGORIZER,
 ) -> dict[str, Categorization]:
     """Categorize merchant keys through the cache -> rules -> LLM cascade.
 
@@ -197,7 +202,7 @@ def categorize_keys(
             for i in range(0, len(unknown), CATEGORIZER_BATCH_SIZE):
                 batch = unknown[i : i + CATEGORIZER_BATCH_SIZE]
                 try:
-                    batch_results = _categorize_batch(client, batch)
+                    batch_results = _categorize_batch(client, batch, model)
                 except Exception:
                     # Transport/API failure: don't cache, so these retry next run
                     for key in batch:
