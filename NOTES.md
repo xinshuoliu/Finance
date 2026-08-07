@@ -198,10 +198,34 @@ tokens, trailing city+province); `ai/cache.py` persists merchant → category in
 - Relative dates ("since January", "last month") resolve against today's
   date, which is included in the prompt.
 
+**Phase 5 (done)** — Recurring detection and monthly narrative:
+
+- **Statistical recurring detection** (`analysis.py`, no AI): a merchant is
+  recurring with ≥3 charge days, gaps fitting one interval bucket (7d, 14d,
+  28–31d, 365d) for ≥75% of gaps, and amount coefficient of variation
+  < 0.15. Same-day charges count once. Output includes frequency, average,
+  next expected date and a monthly cost estimate. Shown at the top of the
+  Recurring tab; the keyword tools remain as manual overrides.
+- **Monthly narrative** (new **Report** tab): pandas computes everything —
+  totals, by-category, % deltas vs previous month, new merchants (only when
+  there is history), detected subscriptions, budget status — and only that
+  summary dict goes to Claude Sonnet 5 through its own privacy guard
+  (`build_narrative_payload` rejects DataFrames/timestamps/raw rows).
+  The model writes 3–5 English sentences and is instructed to never
+  introduce a number absent from the input.
+- **Hallucination check**: every numeric token in the response is parsed and
+  matched against the summary's numbers (plus list counts, with thousands-
+  separator normalization). Unmatched tokens are shown in the UI as a
+  warning and logged to `data/api_log.jsonl` (`narrative_check` events) —
+  that's the measured hallucination rate.
+
 ---
 
 ## Changelog
 
+- **2026-08-07** — AI layer Phase 5: statistical recurring detection
+  (`analysis.py`) in the Recurring tab; Report tab with grounded monthly
+  narrative (Claude Sonnet 5) and per-number hallucination check.
 - **2026-08-07** — AI layer Phase 4: Ask tab — natural-language questions
   translated to Pydantic-validated filter specs (never code), executed in
   pandas, rendered with Plotly.
