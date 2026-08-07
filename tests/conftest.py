@@ -1,4 +1,4 @@
-"""Fixtures communes : isole le journal API dans un répertoire temporaire."""
+"""Shared fixtures: isolate the API log in a temporary directory."""
 
 import pytest
 

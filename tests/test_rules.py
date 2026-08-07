@@ -1,4 +1,4 @@
-"""Tests des règles de catégorisation déterministes."""
+"""Tests for the deterministic categorization rules."""
 
 from pathlib import Path
 

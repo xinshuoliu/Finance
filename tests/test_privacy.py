@@ -1,4 +1,4 @@
-"""Tests du garde-fou de confidentialité : aucun montant ne peut atteindre l'API."""
+"""Tests for the privacy guard: no amount can ever reach the API."""
 
 import json
 

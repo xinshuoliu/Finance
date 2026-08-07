@@ -1,1 +1,1 @@
-"""Couche IA de l'application Finance : normalisation, catégorisation, requêtes."""
+"""AI layer for the Finance app: normalization, categorization, queries."""

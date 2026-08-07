@@ -1,9 +1,8 @@
-"""Normalisation des libellés bancaires en clés marchandes stables.
+"""Normalize bank descriptions into stable merchant keys.
 
-Les banques ajoutent aux libellés des numéros de référence, des numéros de
-succursale et des codes de ville/province qui varient d'une transaction à
-l'autre pour un même marchand. Cette normalisation les supprime pour que
-« AMZN MKTP CA*2K4LD8 » et « AMZN MKTP CA*9XQ1 » produisent la même clé.
+Banks append reference numbers, store numbers and city/province codes that
+vary between transactions of the same merchant. Normalization strips them so
+that "AMZN MKTP CA*2K4LD8" and "AMZN MKTP CA*9XQ1" produce the same key.
 """
 
 import re
@@ -33,7 +32,7 @@ _PUNCT = ".,;:-/&*#'"
 
 
 def _strip_trailing_location(tokens: list[str]) -> list[str]:
-    """Retire le code de province final et le nom de ville qui le précède."""
+    """Drop a trailing province code and the city token preceding it."""
     if not tokens:
         return tokens
 
@@ -55,12 +54,12 @@ def _strip_trailing_location(tokens: list[str]) -> list[str]:
 
 
 def normalize(desc: str) -> str:
-    """Réduit les variantes d'un libellé bancaire à une clé marchande stable.
+    """Collapse bank description variants to a stable merchant key.
 
-    La clé est en MAJUSCULES, sans numéros de référence (#1234, *2K4LD8,
-    suites de 4 chiffres ou plus), sans mots de type de transaction
-    (POS, ACHAT, INTERAC…) et sans ville/province finale. Pour une entrée
-    non vide, la clé retournée n'est jamais vide.
+    The key is UPPERCASE, without reference numbers (#1234, *2K4LD8, runs of
+    4+ digits), without transaction-type words (POS, ACHAT, INTERAC…) and
+    without the trailing city/province. A non-empty input never produces an
+    empty key.
     """
     if desc is None:
         return ""

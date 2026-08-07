@@ -1,8 +1,8 @@
-"""Cache persistant des catégorisations de marchands.
+"""Persistent merchant categorization cache.
 
-Associe chaque clé marchande normalisée (voir ai.normalize) à sa catégorie.
-Un marchand déjà catégorisé ne repasse jamais par l'API : même entrée ->
-même catégorie, à coût nul et de façon déterministe.
+Maps each normalized merchant key (see ai.normalize) to its category, so an
+already-categorized merchant never goes back through the API: same input ->
+same category, deterministically and at zero cost.
 """
 
 import json
@@ -15,7 +15,7 @@ from ai.config import MERCHANT_CACHE_FILE
 
 
 class MerchantCache:
-    """Cache disque « clé marchande -> {category, confidence, source, updated_at} »."""
+    """Disk cache: merchant key -> {category, confidence, source, updated_at}."""
 
     def __init__(self, path: str | Path = MERCHANT_CACHE_FILE) -> None:
         self.path = Path(path)
@@ -35,7 +35,7 @@ class MerchantCache:
             self._data = data
 
     def get(self, key: str) -> dict | None:
-        """Retourne l'entrée du cache pour une clé marchande, ou None si absente."""
+        """Return the cache entry for a merchant key, or None when absent."""
         return self._data.get(key)
 
     def set(
@@ -46,10 +46,10 @@ class MerchantCache:
         source: str,
         needs_review: bool = False,
     ) -> None:
-        """Enregistre en mémoire la catégorie d'une clé marchande.
+        """Record a merchant key's category in memory.
 
-        Appeler save() ensuite pour écrire sur disque — cela permet de
-        grouper l'écriture après un lot de catégorisations.
+        Call save() afterwards to write to disk — this allows batching the
+        write after a whole categorization run.
         """
         entry: dict = {
             "category": category,
@@ -62,7 +62,7 @@ class MerchantCache:
         self._data[key] = entry
 
     def save(self) -> None:
-        """Écrit le cache sur disque de façon atomique (fichier temporaire puis rename)."""
+        """Write the cache to disk atomically (temp file then rename)."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=self.path.parent, prefix=self.path.name, suffix=".tmp")
         try:

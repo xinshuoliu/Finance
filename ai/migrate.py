@@ -1,9 +1,9 @@
-"""Migration ponctuelle de l'ancien système de catégories vers la couche IA.
+"""One-time migration from the legacy category system to the AI layer.
 
-Convertit les mots-clés appris (categories.json) en règles déterministes
-(data/category_rules.json) et re-clé les budgets vers la liste fermée de
-catégories françaises. S'exécute une seule fois : l'existence du fichier de
-règles marque la migration comme faite.
+Converts learned keywords (categories.json) into deterministic rules
+(data/category_rules.json) and re-keys budgets onto the closed French
+category set. Runs once: the existence of the rules file marks the
+migration as done.
 """
 
 import json
@@ -25,7 +25,7 @@ LEGACY_CATEGORY_MAP = {
 
 
 def map_legacy_category(name: str) -> str | None:
-    """Traduit un ancien nom de catégorie vers la liste fermée (None = ignorer)."""
+    """Translate a legacy category name to the closed set (None = skip)."""
     if name in CATEGORIES:
         return name
     lowered = name.strip().lower()
@@ -45,7 +45,7 @@ def _read_json(path: str):
 
 
 def migrate_legacy(categories_path: str, budgets_path: str, rules: RuleStore) -> dict:
-    """Migre mots-clés et budgets hérités ; retourne {rules_added, budgets_migrated}."""
+    """Migrate legacy keywords and budgets; return {rules_added, budgets_migrated}."""
     rules_added = 0
     legacy_categories = _read_json(categories_path)
     if isinstance(legacy_categories, dict):

@@ -1,4 +1,4 @@
-"""Tests de la cascade de catégorisation (cache -> règles -> LLM simulé)."""
+"""Tests for the categorization cascade (cache -> rules -> mocked LLM)."""
 
 import json
 from pathlib import Path

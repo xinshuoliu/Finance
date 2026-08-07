@@ -1,4 +1,4 @@
-"""Tests du cache persistant des catégorisations de marchands."""
+"""Tests for the persistent merchant categorization cache."""
 
 import json
 from pathlib import Path

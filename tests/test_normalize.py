@@ -1,4 +1,4 @@
-"""Tests de la normalisation des libellés bancaires (clés marchandes stables)."""
+"""Tests for bank description normalization (stable merchant keys)."""
 
 import pytest
 

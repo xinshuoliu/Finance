@@ -1,7 +1,7 @@
-"""Journalisation des appels API dans data/api_log.jsonl (jetons, latence, coût).
+"""API call logging into data/api_log.jsonl (tokens, latency, cost).
 
-Tout appel à l'API Anthropic doit passer par logged_call() — c'est ce qui
-rend le coût du système mesurable (phase d'évaluation).
+Every Anthropic API call must go through logged_call() — this is what makes
+the system's cost measurable (evaluation phase).
 """
 
 import json
@@ -12,7 +12,7 @@ from ai.config import API_LOG_FILE, PRICING_USD_PER_MTOK
 
 
 def compute_cost_usd(model: str, input_tokens: int, output_tokens: int) -> float | None:
-    """Calcule le coût d'un appel selon les tarifs publiés ; None si modèle inconnu."""
+    """Compute a call's cost from published pricing; None for unknown models."""
     pricing = PRICING_USD_PER_MTOK.get(model)
     if pricing is None:
         return None
@@ -31,12 +31,12 @@ def _append(record: dict) -> None:
 
 
 def log_event(purpose: str, **fields) -> None:
-    """Journalise un événement local sans appel API (p. ex. résumé d'une cascade)."""
+    """Log a local event without an API call (e.g. a cascade run summary)."""
     _append({"ts": _now(), "purpose": purpose, **fields})
 
 
 def logged_call(client, *, purpose: str, **create_kwargs):
-    """Appelle client.messages.create en journalisant modèle, jetons, latence et coût."""
+    """Call client.messages.create while logging model, tokens, latency and cost."""
     model = create_kwargs.get("model", "")
     start = time.perf_counter()
     try:

@@ -1,4 +1,4 @@
-"""Tests de la migration de l'ancien système de catégories."""
+"""Tests for the legacy category system migration."""
 
 import json
 from pathlib import Path

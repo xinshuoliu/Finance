@@ -1,4 +1,4 @@
-"""Configuration de la couche IA : modèles, tarifs, chemins et seuils."""
+"""AI layer configuration: models, pricing, paths and thresholds."""
 
 import os
 from pathlib import Path
@@ -51,5 +51,5 @@ CONFIDENCE_THRESHOLD = 0.7
 
 
 def ai_available() -> bool:
-    """Retourne True si la clé API Anthropic est configurée (fonctions IA actives)."""
+    """Return True when the Anthropic API key is configured (AI features active)."""
     return bool(os.getenv("ANTHROPIC_API_KEY"))

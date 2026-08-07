@@ -1,4 +1,4 @@
-"""Tests de la journalisation des appels API (coût, latence, erreurs)."""
+"""Tests for API call logging (cost, latency, errors)."""
 
 import json
 from types import SimpleNamespace
