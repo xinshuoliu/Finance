@@ -1,8 +1,9 @@
 __pycache__/
 *.pyc
 .env
-data/
-.pytest_cache/
 categories.json
 budgets.json
 recurring.json
+data/
+.pytest_cache/
+eval/labels.csv
