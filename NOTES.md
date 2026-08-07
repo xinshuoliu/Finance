@@ -180,10 +180,31 @@ tokens, trailing city+province); `ai/cache.py` persists merchant → category in
 - Corrections survive re-importing the same statement (and API downtime) —
   proven by `tests/test_review_flow.py`.
 
+**Phase 4 (done)** — Natural-language queries (new **Ask** tab):
+
+- Type a question ("How much did I spend on restaurants since January?" —
+  English or French). Claude Haiku translates it into a **filter spec, never
+  code**: `{categories, date_from, date_to, aggregate, group_by,
+  merchant_contains, transaction_type}`.
+- Double validation: structured outputs lock the JSON schema (categories and
+  enums), then a Pydantic model (`ai/query.py::FilterSpec`) re-validates —
+  closed-set categories, ISO dates in order, `aggregate` ∈ {sum, mean, count,
+  max}, `group_by` ∈ {month, week, category, merchant, null}. Anything else
+  is rejected with a clear user-facing message.
+- The spec runs locally in pandas (`execute_spec`); grouped results render
+  as a Plotly bar chart + table, scalar results as a metric with the matching
+  transactions expandable. The interpreted filter is always shown above the
+  result so you can see what was understood.
+- Relative dates ("since January", "last month") resolve against today's
+  date, which is included in the prompt.
+
 ---
 
 ## Changelog
 
+- **2026-08-07** — AI layer Phase 4: Ask tab — natural-language questions
+  translated to Pydantic-validated filter specs (never code), executed in
+  pandas, rendered with Plotly.
 - **2026-08-07** — AI layer Phase 3: Review tab (review queue with per-merchant
   corrections and "N similar transactions updated" feedback); all UI strings
   and docstrings switched to English; re-import survival tests.
