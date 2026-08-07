@@ -73,6 +73,9 @@ def normalize(desc: str) -> str:
 
     tokens = [t for t in s.split() if t.strip(_PUNCT)]  # drop "-", "/" separators
     tokens = [t for t in tokens if t.strip(_PUNCT) not in TRANSACTION_TOKENS]
+    # Standalone numbers are store or reference numbers ("METRO 388"), which
+    # differ between branches of the same chain and between statements
+    tokens = [t for t in tokens if not t.strip(_PUNCT).isdigit()]
     tokens = _strip_trailing_location(tokens)
 
     # Digit-stripping can leave orphan single letters ("SHELL C10214" -> "SHELL C")

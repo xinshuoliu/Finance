@@ -52,6 +52,12 @@ def test_long_digit_runs_stripped() -> None:
     assert normalize("NETFLIX.COM 8665797172 ON") == "NETFLIX.COM"
 
 
+def test_store_numbers_stripped() -> None:
+    # Branches of the same chain must share one merchant key
+    assert normalize("METRO 388 MONTREAL QC") == "METRO"
+    assert normalize("METRO 512 LAVAL QC") == "METRO"
+
+
 def test_case_and_whitespace_insensitive() -> None:
     assert normalize("  spotify   music  ") == normalize("SPOTIFY MUSIC")
 
