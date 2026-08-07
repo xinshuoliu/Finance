@@ -107,8 +107,44 @@ Filters apply to all tabs (the Recurring tab has a checkbox to opt in/out of the
 
 ---
 
+## AI layer (in progress)
+
+An AI layer is being added on top of the app: merchant normalization + cache,
+cascading categorizer (cache → rules → Claude Haiku), review queue with rule
+learning, natural-language queries via validated filter specs, French monthly
+narrative (Claude Sonnet), statistical recurring detection, and an evaluation
+harness (`eval/`). Key design decisions:
+
+- **Closed category set (French)**: Épicerie, Restaurant, Achats, Transport,
+  Logement, Services publics, Santé, Loisirs, Abonnements, Revenu, Transfert,
+  Autre. ("Achats" was added to the original 11 — the data needs a general
+  shopping bucket.) Existing user categories and budgets get migrated in Phase 2.
+- **Privacy**: only *normalized merchant strings* are ever sent to the API for
+  categorization — never amounts, balances, dates tied to amounts, or account
+  numbers. The monthly narrative receives pre-computed aggregates only. The
+  model never produces numbers; all math happens in pandas.
+- **Works without a key**: every AI feature degrades gracefully when
+  `ANTHROPIC_API_KEY` is missing (e.g. on the deployed Streamlit Cloud app).
+  Local AI state lives in `data/` (gitignored). API key goes in `.env`
+  (gitignored) as `ANTHROPIC_API_KEY=...`.
+- **Models**: `claude-haiku-4-5` for merchant classification (cheap, batched
+  ~30/request), `claude-sonnet-5` for the French narrative. Pricing constants
+  live in one marked block in `ai/config.py`.
+
+**Phase 1 (done)** — `ai/normalize.py` collapses bank description variants to
+stable merchant keys (strips ref numbers, `#`/`*` suffixes, POS/ACHAT/INTERAC
+tokens, trailing city+province); `ai/cache.py` persists merchant → category in
+`data/merchant_cache.json` (atomic writes, corruption-tolerant);
+`ai/config.py` holds models/pricing/thresholds. Tests: `python -m pytest`
+(offline, no API calls).
+
+---
+
 ## Changelog
 
+- **2026-08-07** — AI layer Phase 1: merchant normalization (`ai/normalize.py`),
+  persistent categorization cache (`ai/cache.py`), AI config with pricing
+  constants (`ai/config.py`), offline pytest suite (`tests/`).
 - **2026-08-07** — Functionality fix pass:
   - Budgets, Budget Status and the pie chart were rendering *below* the tabs instead of inside the Expenses tab (indentation bug) — moved into the tab.
   - Crash fixed: selecting a single date in the range picker (mid-selection) crashed the app.
