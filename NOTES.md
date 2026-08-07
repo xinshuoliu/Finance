@@ -26,7 +26,12 @@ The app opens in your browser (usually http://localhost:8501). Then upload a CSV
 
 | File | Purpose |
 |---|---|
-| `main.py` | The whole app (UI + CSV import + logic) |
+| `main.py` | The Streamlit app (UI + wiring) |
+| `importer.py` | Bank CSV import: encoding/separator detection, column mapping, parsing |
+| `analysis.py` | Statistical recurring-payment detection (no AI) |
+| `ai/` | AI layer (see below) |
+| `eval/run_eval.py` | Evaluation harness (accuracy, cost, latency) |
+| `tests/` | pytest suite — runs offline, no API calls |
 | `categories.json` | Your categories and the merchant keywords learned for each one |
 | `budgets.json` | Budget amount (CAD) per category |
 | `recurring.json` | Keywords used to match recurring payments/subscriptions |
@@ -219,10 +224,44 @@ tokens, trailing city+province); `ai/cache.py` persists merchant → category in
   warning and logged to `data/api_log.jsonl` (`narrative_check` events) —
   that's the measured hallucination rate.
 
+**Phase 6 (done)** — Evaluation harness (`eval/run_eval.py`):
+
+```bash
+python -m eval.run_eval --make-template statement1.csv statement2.csv  # build the label template
+python -m eval.run_eval                                                # measure + rewrite README table
+```
+
+- `--make-template` reads bank CSVs, normalizes descriptions and writes
+  `eval/labels.csv` with **one row per distinct merchant** (deduplicated, with
+  its transaction count and an example description) — so each merchant is
+  labelled once. Re-running keeps labels already filled in.
+- The eval uses a **seeded** (42) 300/100 train/test split — proportional
+  75/25 when fewer labels exist — and measures four configurations on the
+  held-out set: *Rules only*, *+ Haiku*, *+ Sonnet*, and *+ corrections after
+  a simulated month* (month 1 = half the merchants, every mistake corrected
+  through the real correction path, then re-measured on the full test set;
+  month-1 transactions count toward the cost so it stays honest).
+- Each configuration starts from an **empty cache and its own rule store**,
+  so results are never contaminated by the app's state or by a previous run.
+- Metrics per config: accuracy, API calls / 1000 transactions, cost / 1000
+  transactions and p50 latency — all read back from `data/api_log.jsonl`, so
+  the cost comes from the real logged token counts and the pricing block in
+  `ai/config.py`. Plus a per-category confusion matrix (rows = true,
+  columns = predicted).
+- Results are written into `README.md` between `<!-- EVAL_START -->` /
+  `<!-- EVAL_END -->` so the published numbers can't go stale.
+- Without an API key, *Rules only* still runs and the LLM configs are marked
+  `no API key` rather than failing.
+- `eval/labels.csv` is gitignored — it contains real merchant names.
+
 ---
 
 ## Changelog
 
+- **2026-08-07** — AI layer Phase 6: evaluation harness (`eval/run_eval.py`)
+  with label template, seeded split, 4-config comparison, confusion matrix and
+  auto-updated README table; CSV import extracted to `importer.py`;
+  normalization now strips store numbers (`METRO 388` → `METRO`).
 - **2026-08-07** — AI layer Phase 5: statistical recurring detection
   (`analysis.py`) in the Recurring tab; Report tab with grounded monthly
   narrative (Claude Sonnet 5) and per-number hallucination check.
