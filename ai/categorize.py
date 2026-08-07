@@ -1,12 +1,15 @@
-"""Catégorisation en cascade : cache -> règles -> LLM (Claude Haiku).
+"""Cascading categorization: cache -> rules -> LLM (Claude Haiku).
 
-Ordre des niveaux, du moins cher au plus cher :
-1. Cache marchand — coût nul, déterministe (même clé, même catégorie) ;
-2. Règles utilisateur/héritées — déterministe ;
-3. Appel LLM par lots (~30 marchands/requête), pour les inconnus seulement.
+Tiers, cheapest first:
+1. Merchant cache — zero cost, deterministic (same key, same category);
+2. User/legacy rules — deterministic;
+3. Batched LLM calls (~30 merchants/request), for unknown merchants only.
 
-En cas d'échec de l'API, les inconnus reçoivent « Autre » avec le drapeau
-« à revoir », sans écriture au cache — ils seront réessayés plus tard.
+On API failure, unknown merchants get "Autre" with the needs-review flag and
+no cache write — they are retried later.
+
+Note: the categorizer prompt is intentionally French — it matches the French
+category set and the mostly-Quebecois merchant strings.
 """
 
 import json
@@ -30,7 +33,7 @@ from ai.rules import RuleStore
 
 @dataclass
 class Categorization:
-    """Résultat de catégorisation d'une clé marchande."""
+    """Categorization result for one merchant key."""
 
     category: str
     confidence: float
@@ -93,10 +96,10 @@ Réponds pour CHAQUE libellé fourni, en recopiant le libellé à l'identique da
 
 
 def _parse_response(text: str, batch: list[str]) -> tuple[dict[str, tuple[str, float]] | None, bool]:
-    """Extrait {marchand: (catégorie, confiance)} d'une réponse du modèle.
+    """Extract {merchant: (category, confidence)} from a model response.
 
-    Retourne (None, True) si la réponse est illisible ; sinon le dict des
-    éléments valides et un booléen signalant des éléments invalides ignorés.
+    Returns (None, True) when the response is unreadable; otherwise the dict
+    of valid items plus a flag signalling invalid items that were skipped.
     """
     try:
         data = json.loads(text)
@@ -141,7 +144,7 @@ def _attempt_batch(client, batch: list[str]) -> tuple[dict[str, tuple[str, float
 
 
 def _categorize_batch(client, batch: list[str]) -> dict[str, Categorization]:
-    """Catégorise un lot via l'API, avec une seule relance si la sortie est invalide."""
+    """Categorize one batch via the API, retrying once on invalid output."""
     first, had_invalid = _attempt_batch(client, batch)
     merged = dict(first or {})
     if first is None or had_invalid or any(key not in merged for key in batch):
@@ -167,11 +170,11 @@ def categorize_keys(
     client=None,
     use_llm: bool = True,
 ) -> dict[str, Categorization]:
-    """Catégorise des clés marchandes via la cascade cache -> règles -> LLM.
+    """Categorize merchant keys through the cache -> rules -> LLM cascade.
 
-    Les résultats LLM sont écrits au cache (avec « needs_review » sous le
-    seuil de confiance). Un échec de transport API produit des résultats
-    « fallback » non mis en cache, pour réessai ultérieur.
+    LLM verdicts are written to the cache (flagged needs_review under the
+    confidence threshold). API transport failures produce uncached
+    "fallback" results, so they retry on a later run.
     """
     results: dict[str, Categorization] = {}
     unknown: list[str] = []
@@ -233,3 +236,27 @@ def categorize_keys(
         )
 
     return results
+
+
+def record_user_correction(
+    key: str,
+    category: str,
+    cache: MerchantCache,
+    rules: RuleStore,
+    save: bool = True,
+) -> bool:
+    """Record a user's category decision as a durable rule + cache entry.
+
+    The rule makes the correction apply to every past and future transaction
+    of this merchant (and survives re-importing the same statement); the
+    cache entry clears the needs-review flag with full confidence. With
+    save=False the caller batches several corrections and saves once.
+    """
+    if not key:
+        return False
+    rules.add(key, category, source="user")
+    cache.set(key, category, 1.0, "user")
+    if save:
+        rules.save()
+        cache.save()
+    return True
