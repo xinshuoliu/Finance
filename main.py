@@ -10,9 +10,11 @@ from ai.cache import MerchantCache
 from ai.categorize import Categorization, categorize_keys, record_user_correction
 from ai.config import CATEGORIES, CATEGORY_RULES_FILE, ai_available
 from ai.migrate import migrate_legacy
+from ai.narrative import NarrativeError, build_month_summary, generate_narrative
 from ai.normalize import normalize
 from ai.query import FilterSpec, QueryTranslationError, execute_spec, translate_question
 from ai.rules import RuleStore
+from analysis import detect_recurring
 
 st.set_page_config(page_title="Simple Finance App", page_icon="💰", layout="wide")
 
@@ -425,8 +427,10 @@ def main():
 
     st.session_state.debits_df = debits_df.copy()
 
-    tab1, tab2, tab_review, tab3, tab_ask = st.tabs(
-        ["Expenses (Debits)", "Payments (Credits)", "Review", "Recurring", "Ask"]
+    detected_recurring = detect_recurring(df)
+
+    tab1, tab2, tab_review, tab3, tab_report, tab_ask = st.tabs(
+        ["Expenses (Debits)", "Payments (Credits)", "Review", "Recurring", "Report", "Ask"]
     )
 
     with tab1:
@@ -635,6 +639,34 @@ def main():
     with tab3:
         st.subheader("Recurring payments / subscriptions")
 
+        st.markdown("**Detected automatically**")
+        st.caption(
+            "Merchants charging at a steady rhythm (weekly, biweekly, monthly or yearly) "
+            "with stable amounts — computed locally with statistics, no AI involved. "
+            "Always uses the whole file, ignoring the filters above."
+        )
+        if detected_recurring.empty:
+            st.info(
+                "No recurring pattern detected yet — this needs at least 3 charges "
+                "of the same merchant at a steady interval."
+            )
+        else:
+            st.dataframe(
+                detected_recurring,
+                width="stretch",
+                hide_index=True,
+                column_config={
+                    "AverageAmount": st.column_config.NumberColumn("Average", format="%.2f CAD"),
+                    "LastDate": st.column_config.DateColumn("Last charge", format="DD/MM/YYYY"),
+                    "NextExpected": st.column_config.DateColumn("Next expected", format="DD/MM/YYYY"),
+                    "MonthlyEstimate": st.column_config.NumberColumn(
+                        "Monthly estimate", format="%.2f CAD"
+                    ),
+                },
+            )
+
+        st.divider()
+
         use_filtered = st.checkbox("Use current filters (date/search) for recurring view", value=False)
         base_df = filtered_df.copy() if use_filtered else df.copy()
 
@@ -750,6 +782,50 @@ def main():
         )
 
         st.caption("Tip: Copy a merchant name (or a short part of it) from this table into the keyword box above.")
+
+    with tab_report:
+        st.subheader("Monthly report")
+
+        months = sorted(df["Date"].dt.to_period("M").astype(str).unique(), reverse=True)
+        month = st.selectbox("Month", options=months)
+        summary = build_month_summary(
+            df, month, budgets=st.session_state.budgets, recurring=detected_recurring
+        )
+
+        colM1, colM2 = st.columns(2)
+        with colM1:
+            st.metric("Total spent", f"{summary['total_spent']:,.2f} CAD")
+        with colM2:
+            st.metric("Transactions", summary["transaction_count"])
+
+        with st.expander("Figures sent to the AI (aggregates only — never transactions)"):
+            st.json(summary)
+
+        if not ai_available():
+            st.info(
+                "AI is not configured — add ANTHROPIC_API_KEY to a .env file to "
+                "generate the written summary."
+            )
+        else:
+            if st.button("Generate written summary", type="primary"):
+                with st.spinner("Writing the summary…"):
+                    try:
+                        narrative = generate_narrative(summary)
+                        st.session_state[f"narrative_{month}"] = {
+                            "text": narrative.text,
+                            "suspects": narrative.suspect_numbers,
+                        }
+                    except NarrativeError as exc:
+                        st.error(str(exc))
+            if stored := st.session_state.get(f"narrative_{month}"):
+                st.write(stored["text"])
+                if stored["suspects"]:
+                    st.warning(
+                        "Numbers not found in the source figures (possible hallucination): "
+                        + ", ".join(stored["suspects"])
+                    )
+                else:
+                    st.caption("✓ Every number in this summary was verified against the source figures.")
 
     with tab_ask:
         st.subheader("Ask about your transactions")
