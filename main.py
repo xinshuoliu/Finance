@@ -640,7 +640,9 @@ def main():
                     except NarrativeError as exc:
                         st.error(str(exc))
             if stored := st.session_state.get(f"narrative_{month}"):
-                st.write(stored["text"])
+                # Streamlit reads paired $ as LaTeX math, so escape the dollar
+                # signs the model writes in amounts
+                st.markdown(stored["text"].replace("$", r"\$"))
                 if stored["suspects"]:
                     st.warning(
                         "Numbers not found in the source figures (possible hallucination): "
