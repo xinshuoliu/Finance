@@ -52,6 +52,16 @@ LABEL_COLUMNS = ["merchant_key", "category", "occurrences", "example_description
 # --------------------------------------------------------------------------
 
 
+def _read_labels_csv(path: Path) -> pd.DataFrame:
+    """Read a labels file, tolerating what Excel writes on Windows."""
+    for encoding in ("utf-8-sig", "cp1252"):
+        try:
+            return pd.read_csv(path, encoding=encoding)
+        except UnicodeDecodeError:
+            continue
+    raise ValueError(f"{path.name}: could not decode the file")
+
+
 def build_template(csv_paths: list[str], labels_path: Path = LABELS_FILE) -> pd.DataFrame:
     """Build (or refresh) the labelling template from bank CSV exports.
 
@@ -75,13 +85,13 @@ def build_template(csv_paths: list[str], labels_path: Path = LABELS_FILE) -> pd.
     template["category"] = ""
 
     if labels_path.exists():
-        existing = pd.read_csv(labels_path).fillna({"category": ""})
+        existing = _read_labels_csv(labels_path).fillna({"category": ""})
         known = dict(zip(existing["merchant_key"], existing["category"]))
         template["category"] = template["merchant_key"].map(lambda k: known.get(k, ""))
 
     template = template[LABEL_COLUMNS]
     labels_path.parent.mkdir(parents=True, exist_ok=True)
-    template.to_csv(labels_path, index=False, encoding="utf-8")
+    template.to_csv(labels_path, index=False, encoding="utf-8-sig")
     return template
 
 
@@ -91,7 +101,7 @@ def load_labels(labels_path: Path = LABELS_FILE) -> pd.DataFrame:
         raise FileNotFoundError(
             f"{labels_path} not found — run: python -m eval.run_eval --make-template <csv>…"
         )
-    df = pd.read_csv(labels_path).fillna({"category": ""})
+    df = _read_labels_csv(labels_path).fillna({"category": ""})
     df["category"] = df["category"].astype(str).str.strip()
     labelled = df[df["category"] != ""].copy()
 
